@@ -1,4 +1,4 @@
-package threexuiclinet
+package threexuiclient
 
 type XUIResponse[T any] struct {
 	Success bool   `json:"success"`

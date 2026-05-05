@@ -1,4 +1,4 @@
-package threexuiclinet
+package threexuiclient
 
 type LoginRequest struct {
 	Username      string  `json:"username"`
