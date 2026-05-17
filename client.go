@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"time"
+)
+
+var (
+	defaultHost = "localhost"
+	defaultPort = 2053
 )
 
 type XUIInboundClient struct {
@@ -20,54 +26,33 @@ type XUIInboundClient struct {
 }
 
 type Client struct {
-	host       string
-	port       int
-	secretPath string
-	client     http.Client
+	options ClientOptions
 }
 
-func CreateClient(host string, port int, secretPath *string) *Client {
-	var computedString string
-	if secretPath == nil {
-		computedString = "/secret"
+func CreateClient(options ClientOptions) *Client {
+	if options.Host == nil {
+		options.Host = &defaultHost
 	}
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		log.Fatalln(err)
+	if options.Port == nil {
+		options.Port = &defaultPort
+	}
+
+	if options.httpClient == nil {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		options.httpClient = &http.Client{
+			Jar:     jar,
+			Timeout: 30 * time.Second,
+		}
 	}
 
 	return &Client{
-		host:       host,
-		port:       port,
-		secretPath: computedString,
-		client: http.Client{
-			Jar:     jar,
-			Timeout: 30 * time.Second,
-		},
+		options: options,
 	}
-}
-
-func (s *Client) Login(creds *LoginRequest) error {
-	url := s.makeUrl("login")
-	var responseBody XUIResponse[XUIInbound]
-
-	resp, err := s.doRequest("POST", url.String(), creds)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
-		return fmt.Errorf("decode err: %w", err)
-	}
-
-	if !responseBody.Success {
-		return fmt.Errorf("Login error: %s", responseBody.Msg)
-	}
-
-	return nil
 }
 
 func (s *Client) Inbounds() ([]XUIInbound, error) {
@@ -83,6 +68,10 @@ func (s *Client) Inbounds() ([]XUIInbound, error) {
 
 	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
 		return nil, fmt.Errorf("decode error: %s", err)
+	}
+
+	if respBody.Obj == nil {
+		return nil, fmt.Errorf("failed to get 'obj' from response: %v", respBody)
 	}
 
 	return respBody.Obj, nil
@@ -138,24 +127,69 @@ func (s *Client) AddClientToInbound(inboundId int, settings XUIInboundSettings) 
 	return nil
 }
 
+func (s *Client) ApiTokens() ([]TokenInfo, error) {
+	url := s.makeUrl("panel", "settings", "apiTokens")
+
+	if resp, err := s.doRequest("POST", url.String(), nil); err == nil {
+		var result XUIResponse[[]TokenInfo]
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("decode error: %w", err)
+		}
+
+		return result.Obj, nil
+	} else {
+		return nil, fmt.Errorf("request error: %w", err)
+	}
+}
+
+func (s *Client) Login(username string, passwword string) error {
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	creds.Username = username
+	creds.Password = passwword
+
+	url := s.makeUrl("login")
+
+	_, err := s.doRequest("post", url.String(), creds)
+	if err != nil {
+		return fmt.Errorf("failed to login to panel: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Client) httpClient() *http.Client {
+	return s.options.httpClient
+}
+
 func (s *Client) makeUrl(elem ...string) *url.URL {
 	url := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("%s:%v", s.host, s.port),
+		Host:   fmt.Sprintf("%s:%v", *s.options.Host, s.options.Port),
 	}
 
-	url = url.JoinPath(s.secretPath)
+	if s.options.basePath != nil {
+		url = url.JoinPath(*s.options.basePath)
+	}
+
 	url = url.JoinPath(elem...)
 
 	return url
 }
 
 func (s *Client) doRequest(method string, url string, body any) (*http.Response, error) {
-	var bodyBuffer *bytes.Buffer
+	var bodyBuffer io.Reader
+
+	log.Printf("Request: [%s] %s", method, url)
 
 	if body != nil {
-		bodyBuffer = bytes.NewBuffer(nil)
-		json.NewEncoder(bodyBuffer).Encode(body)
+		buf := &bytes.Buffer{}
+		if err := json.NewEncoder(buf).Encode(body); err != nil {
+			return nil, fmt.Errorf("failed to encode request body: %w", err)
+		}
+		bodyBuffer = buf
 	}
 
 	req, err := http.NewRequest(method, url, bodyBuffer)
@@ -163,15 +197,24 @@ func (s *Client) doRequest(method string, url string, body any) (*http.Response,
 		return nil, fmt.Errorf("request error: %w", err)
 	}
 
-	req.Header.Add("Content-Type", "application/json")
+	log.Printf("Requst: %s", req.Body)
 
-	resp, err := s.client.Do(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("User-Agent", "threexui-client/1.0")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.options.Token))
+
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("response error:  %w", err)
+		return resp, fmt.Errorf("response error:  %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %v", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		return resp, fmt.Errorf("unexpected status code: %d, body: %v", resp.StatusCode, string(bodyBytes))
 	}
 
 	return resp, nil

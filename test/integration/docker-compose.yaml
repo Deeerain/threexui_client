@@ -1,0 +1,8 @@
+services:
+  threexui:
+    image: ghcr.io/mhsanaei/3x-ui:latest
+    container_name: 3xui-test
+    ports:
+      - "2053:2053"
+    volumes:
+      - $PWD/db/:/etc/x-ui/
