@@ -34,8 +34,8 @@ func CreateClient(options ClientOptions) *Client {
 		options.Host = &defaultHost
 	}
 
-	if options.Port == nil {
-		options.Port = &defaultPort
+	if options.Port == 0 {
+		options.Port = defaultPort
 	}
 
 	if options.httpClient == nil {
@@ -78,7 +78,7 @@ func (s *Client) Inbounds() ([]XUIInbound, error) {
 }
 
 func (s *Client) Inbound(id int) (*XUIInbound, error) {
-	url := s.makeUrl("panel", "api", "inbounds", "get", string(id))
+	url := s.makeUrl("panel", "api", "inbounds", "get", fmt.Sprint(id))
 
 	resp, err := s.doRequest("GET", url.String(), nil)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 
 type ClientOptions struct {
 	Host       *string
-	Port       *int
+	Port       int
 	basePath   *string
 	Token      string
 	httpClient *http.Client
