@@ -1,0 +1,10 @@
+services:
+  lib:
+    container_name: lib-test
+    build: .
+    environment:
+      XUI_TOKEN: ${XUI_TOKEN}
+      XUI_BASE_PATH: ${XUI_BASE_PATH}
+      XUI_HOST: ${XUI_HOST:-localhost:5353}
+      XUI_SCHEME: ${XUI_SCHEME:-http}
+    network_mode: host

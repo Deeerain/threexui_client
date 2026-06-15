@@ -1,4 +1,4 @@
-package threexuiclient
+package client
 
 import (
 	"bytes"
@@ -10,19 +10,33 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"time"
+
+	"github.com/Deeerain/threexui_client/model"
 )
 
 var (
 	defaultHost = "localhost"
-	defaultPort = 2053
 )
 
-type XUIInboundClient struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Flow  string `json:"flow"`
-	TgID  int    `json:"tgId"`
-	SubID string `json:"subId"`
+type Scheme string
+
+const (
+	HTTPScheme  Scheme = "http"
+	HTTPSScheme Scheme = "https"
+)
+
+type ClientOptions struct {
+	Host       *string
+	BasePath   *string
+	Token      string
+	httpClient *http.Client
+	Scheme     *Scheme
+}
+
+func NewDefaultClientOptions(token string) ClientOptions {
+	return ClientOptions{
+		Token: token,
+	}
 }
 
 type Client struct {
@@ -32,10 +46,6 @@ type Client struct {
 func CreateClient(options ClientOptions) *Client {
 	if options.Host == nil {
 		options.Host = &defaultHost
-	}
-
-	if options.Port == 0 {
-		options.Port = defaultPort
 	}
 
 	if options.httpClient == nil {
@@ -55,7 +65,7 @@ func CreateClient(options ClientOptions) *Client {
 	}
 }
 
-func (s *Client) Inbounds() ([]XUIInbound, error) {
+func (s *Client) Inbounds() ([]model.XUIInbound, error) {
 	url := s.makeUrl("panel", "api", "inbounds", "list")
 
 	resp, err := s.doRequest("GET", url.String(), nil)
@@ -64,7 +74,7 @@ func (s *Client) Inbounds() ([]XUIInbound, error) {
 		return nil, fmt.Errorf("request error: %w", err)
 	}
 
-	var respBody XUIResponse[[]XUIInbound]
+	var respBody model.XUIResponse[[]model.XUIInbound]
 
 	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
 		return nil, fmt.Errorf("decode error: %s", err)
@@ -77,7 +87,7 @@ func (s *Client) Inbounds() ([]XUIInbound, error) {
 	return respBody.Obj, nil
 }
 
-func (s *Client) Inbound(id int) (*XUIInbound, error) {
+func (s *Client) Inbound(id int) (*model.XUIInbound, error) {
 	url := s.makeUrl("panel", "api", "inbounds", "get", fmt.Sprint(id))
 
 	resp, err := s.doRequest("GET", url.String(), nil)
@@ -85,7 +95,7 @@ func (s *Client) Inbound(id int) (*XUIInbound, error) {
 		return nil, fmt.Errorf("request error: %w", err)
 	}
 
-	var responseBody XUIResponse[*XUIInbound]
+	var responseBody model.XUIResponse[*model.XUIInbound]
 
 	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
 		return nil, fmt.Errorf("encoder error: %w", err)
@@ -94,7 +104,7 @@ func (s *Client) Inbound(id int) (*XUIInbound, error) {
 	return responseBody.Obj, nil
 }
 
-func (s *Client) AddClientToInbound(inboundId int, settings XUIInboundSettings) error {
+func (s *Client) AddClientToInbound(inboundId int, settings model.XUIInboundSettings) error {
 	url := s.makeUrl("panel", "api", "inbounds", "addClient")
 
 	settingsString, err := json.Marshal(settings)
@@ -115,7 +125,7 @@ func (s *Client) AddClientToInbound(inboundId int, settings XUIInboundSettings) 
 		return fmt.Errorf("request error: %w", err)
 	}
 
-	var result XUIResponse[any]
+	var result model.XUIResponse[any]
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("decode error: %w", err)
 	}
@@ -127,11 +137,43 @@ func (s *Client) AddClientToInbound(inboundId int, settings XUIInboundSettings) 
 	return nil
 }
 
-func (s *Client) ApiTokens() ([]TokenInfo, error) {
+func (s *Client) UpdateClient(clientID string, inboundID int, settings model.XUIInboundSettings) error {
+	url := s.makeUrl("panel", "api", "inbounds", "updateClient", clientID)
+
+	settingsString, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal error: %w", err)
+	}
+
+	payload := struct {
+		Id       int    `json:"id"`
+		Settings string `json:"settings"`
+	}{
+		Id:       inboundID,
+		Settings: string(settingsString),
+	}
+	resp, err := s.doRequest("POST", url.String(), payload)
+	if err != nil {
+		return fmt.Errorf("request error: %w", err)
+	}
+
+	var result model.XUIResponse[any]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	if !result.Success {
+		return fmt.Errorf("api error: %v (status_code: %v)", result.Msg, resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (s *Client) ApiTokens() ([]model.TokenInfo, error) {
 	url := s.makeUrl("panel", "settings", "apiTokens")
 
 	if resp, err := s.doRequest("POST", url.String(), nil); err == nil {
-		var result XUIResponse[[]TokenInfo]
+		var result model.XUIResponse[[]model.TokenInfo]
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("decode error: %w", err)
 		}
@@ -140,6 +182,40 @@ func (s *Client) ApiTokens() ([]TokenInfo, error) {
 	} else {
 		return nil, fmt.Errorf("request error: %w", err)
 	}
+}
+
+func (s *Client) GetClientList() ([]model.XUIInboundClient, error) {
+	url := s.makeUrl("panel", "api", "clients", "list")
+
+	resp, err := s.doRequest("GET", url.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result model.XUIResponse[[]model.XUIInboundClient]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("Failed to decode response: %w", err)
+	}
+
+	return result.Obj, nil
+}
+
+func (s *Client) GetClientByTelegramId(id int64) ([]model.XUIInboundClient, error) {
+	clients, err := s.GetClientList()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []model.XUIInboundClient
+
+	for _, client := range clients {
+		if client.TgID == int(id) {
+			result = append(result, client)
+		}
+	}
+
+	return result, err
 }
 
 func (s *Client) Login(username string, passwword string) error {
@@ -165,13 +241,19 @@ func (s *Client) httpClient() *http.Client {
 }
 
 func (s *Client) makeUrl(elem ...string) *url.URL {
-	url := &url.URL{
-		Scheme: "http",
-		Host:   fmt.Sprintf("%s:%v", *s.options.Host, s.options.Port),
+	scheme := HTTPScheme
+
+	if s.options.Scheme != nil && *s.options.Scheme != "" {
+		scheme = *s.options.Scheme
 	}
 
-	if s.options.basePath != nil {
-		url = url.JoinPath(*s.options.basePath)
+	url := &url.URL{
+		Scheme: string(scheme),
+		Host:   *s.options.Host,
+	}
+
+	if s.options.BasePath != nil {
+		url = url.JoinPath(*s.options.BasePath)
 	}
 
 	url = url.JoinPath(elem...)
