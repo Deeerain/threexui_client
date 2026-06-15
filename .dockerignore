@@ -1,0 +1,6 @@
+.env
+docker-compose.*
+Dockerfile
+*.md
+Makefile
+.gihub
